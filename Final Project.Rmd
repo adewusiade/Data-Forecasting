@@ -1,6 +1,6 @@
 ---
-title: "Final Project"
-author: "BRET"
+title: "Time Series Analysis and Forecast"
+author: "Ade"
 date: "16/05/2021"
 output:
   word_document: default
