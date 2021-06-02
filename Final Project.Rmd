@@ -1,0 +1,374 @@
+---
+title: "Final Project"
+author: "BRET"
+date: "16/05/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+# The data source for this project was from https://fred.stlouisfed.org/series/HOUSTNSA.
+# The data contains the monthly record of New Privately-Owned Housing Units Started from January 1959 to March 2021.
+# To perform this project, the monthly records from January 1990 to December 2015 totaling 300 months records were downloaded from the data source.
+
+```{r }
+
+library(fpp2)
+library(seasonal)
+library(ggplot2)
+library(forecast)
+library(urca)
+library(tseries)
+library(leaps)
+library(glmnet)
+library(dplyr)
+library(here)
+library(readxl)
+library(ISLR)
+library(gridExtra)
+library(seas)
+```
+
+# First we import the data
+
+```{r }
+
+y <- read.csv("HOUSTNSA.csv")
+```
+
+# Convert the data to series.
+
+```{r }
+
+data <- ts(y$HOUSTNSA, frequency=12, start=c(1990,1))
+```
+# a.
+# The time plot
+
+```{r }
+
+autoplot(data) + 
+  ggtitle(" New Privately-Owned Housing Units Started from January 1990 to December 2015") + 
+  theme(plot.title = element_text(hjust = 0.5)) + # to center the plot title
+  xlab("Year") +
+  ylab(" New Privately-Owned Housing Units Started")
+```
+
+# The seasonal plot
+
+```{r }
+
+ggseasonplot(data, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Thousands of Units") +
+  ggtitle("Seasonal plot: New Privately-Owned Housing Units Started")
+```
+
+# The subseries plot
+
+```{r }
+
+ggsubseriesplot(data) +
+  ylab("Thousands of Units") +
+  ggtitle("Seasonal subseries plot: New Privately-Owned Housing Units Started")
+```
+
+# The plot shows strong seasonality within each year, as well as some strong cyclic behavior. There appears to be an upward trend in the sales between January 1991 to May 2005. We can see that there is a peak every summer, and a trough every winter through the monthly New Privately-Owned Housing Units Started.
+# There was a decrease between May 2005 to January 2009.
+
+
+# b.
+# The Box-Cox transformation is appropriate for the data. The data shows different variations at different levels of the series, then a transformation can be useful.
+
+```{r }
+
+lambda_data <- (BoxCox.lambda(data))
+lambda_data
+autoplot(BoxCox(data,lambda_data))+  ggtitle("Box Cox Transformation of New Privately-Owned Housing Units Started")
+```
+
+# The BoxCox.lambda function was used to choose a value for lambda to make the size of the seasonal variation constant. The value of lambda chosen is 0.2162099. It was helpful as it removed the curvature in the original data and therefore makes it possible for a straight-line linear regression model. The transformed data is more linear and has less variation than the original data. 
+
+# c.
+
+# Drift method
+
+```{r }
+
+data %>%tsCV(forecastfunction=rwf, drift=TRUE, h=48) -> e
+e^2 %>% mean(na.rm=TRUE) %>% sqrt
+data %>% rwf(drift=TRUE) %>% residuals -> res
+res^2 %>% mean(na.rm=TRUE) %>% sqrt
+
+autoplot(res) + xlab("Year") + ylab("") +
+  ggtitle("Residuals from naive method")
+```
+
+# The drift method is a reasonable method for the time series.
+# Based on the returned results of tsCV function, I select the Drift method because it yielded the smallest error value.
+
+# d.
+# I apply the X11 decomposition method and plot the result.
+
+```{r }
+
+data %>%
+  seas(x11="") %>%
+  autoplot() + xlab("Year") +
+  ggtitle("X11 decomposition of New Privately-Owned Housing Units Started")
+```
+
+# There is strong seasonality in the data. The variation in the seasonal pattern appears to be proportional to the level of the time series. The seasonal variation increases over time.
+# The decomposition is multiplicative.
+
+# e.
+# I let the ets() function select the model by minimizing the AICc
+
+```{r }
+
+x <- window(data, start=2007)
+fit.dt <- ets(x)
+summary(fit.dt)
+autoplot(fit.dt)
+
+fit.dt %>% forecast(h=48) %>%
+  autoplot() +
+  ylab(" New Privately-Owned Housing Units Started in Thousands")
+```
+
+# The model selected is ETS(M,Ad,M) method. This shows that the data has a Multiplicative error, Additive damped trend and Multiplicative seasonality  model.
+# The model smoothing parameters are: alpha = 0.5898, beta = 0.012 and gamma = 1e-04.
+# The model is preferred because compared to other models, it produces the best AIC, AICc and BIC values.
+
+# Residual diagnostics
+
+```{r }
+
+cbind('Residuals' = residuals(fit.dt),
+      'Forecast errors' = residuals(fit.dt, type='response')) %>%
+  autoplot(facet=TRUE) + xlab("Year") + ylab("")
+
+checkresiduals(fit.dt)
+```
+
+# The time plot of forecast errors shows that the forecast errors have roughly constant variance over time. The histogram of forecast errors show that it is plausible that the forecast errors are normally distributed with mean zero and constant variance.
+# Residuals looks like white noise.
+# Yes, the model looks reasonable, 
+
+# f.
+
+```{r }
+
+fit.stl <-  stl(data, t.window = 11, s.window = 11, robust = TRUE)
+autoplot(fit.stl)
+
+forecast.stl<-stlf(data, t.window = 11, s.window = 11,h=48, robust = TRUE, method="ets")
+autoplot(forecast.stl)
+```
+# g.
+
+# The prediction interval from the ETS forecast with bootstrapped time series
+
+# But the whole procedure can be handled with the baggedETS function.
+
+```{r }
+
+bootseries <- bld.mbb.bootstrap(data, 10) %>%
+  as.data.frame() %>% ts(start=1990, frequency=12)
+autoplot(data) +
+  autolayer(bootseries, colour=TRUE) +
+  autolayer((data), colour=FALSE) +
+  ylab("Bootstrapped series") + guides(colour="none")
+
+nsim <- 10
+sim <- bld.mbb.bootstrap(data, nsim)
+
+h <- 48
+future <- matrix(0, nrow=nsim, ncol=h)
+for(i in seq(nsim))
+  future[i,] <- simulate(ets(sim[[i]]), nsim=h)
+
+start <- tsp(data)[2]+1/12
+simfc <- structure(list(
+  mean = ts(colMeans(future), start=start, frequency=12),
+  lower = ts(apply(future, 2, quantile, prob=0.025),
+             start=start, frequency=12),
+  upper = ts(apply(future, 2, quantile, prob=0.975),
+             start=start, frequency=12),
+  level=95),
+  class="forecast")
+
+
+etsfc <- forecast(fit.dt, h=48, level=95)
+autoplot(fit.dt) +
+  ggtitle("New Privately-Owned Housing Units Started in Thousands") +
+  xlab("Year") + ylab("Units in Thousands") +
+  autolayer(simfc, series="Simulated") +
+  autolayer(etsfc, series="ETS")
+```
+
+# By default, 100 bootstrapped series are used. And on average, baggedets gives better forecasts than just applying ets directly. But it is slower because a lot more computation is required.
+# The forecast values from this prediction intervals appear larger than those obtained from an ETS model applied directly to the original data.
+
+# h. 
+
+```{r }
+
+etsfc <- data %>% ets() %>% forecast(h=48)
+baggedfc <- data %>% baggedETS() %>% forecast(h=48)
+
+autoplot(data) +
+  autolayer(baggedfc, series="BaggedETS", PI=FALSE) +
+  autolayer(etsfc, series="ETS", PI=FALSE) +
+  guides(colour=guide_legend(title="Forecasts"))
+```
+
+# We get better forecasts using this method than if we simply forecast the original time series directly.
+
+# i. 
+
+# To choose an ARIMA model, I plot the Autocorrelation and Partial Autocorrelation function. 
+
+```{r }
+
+data %>% ggtsdisplay()
+ggAcf(data)
+ggPacf(data)
+ndiffs(data)
+```
+
+# This shows that the level of differencing needed is 1.
+# We see from the correlogram that the autocorrelation at all lag exceeds the significance bounds
+# From the partial autocorrelogram, we see that the partial autocorrelation at lag 1 is positive and exceeds the significance bounds, while the partial autocorrelation at lag 2 is negative and also exceeds the significance bounds.
+# The plots show that the ARIMA model ARIMA(2,1,0) with seasonality is fit for the ts data. 
+
+```{r }
+
+fit.arima <- Arima(data, order=c(2,1,0),
+              seasonal=c(1,1,2))
+fit.arima
+```
+# Forecast
+
+```{r }
+
+fitfc <- (forecast(fit.arima, h=48))
+fitfc
+
+checkresiduals(fit.arima)
+```
+
+# The model appears reasonable.
+# The time plot of the in-sample forecast errors shows that the variance of the forecast errors seems to be roughly constant over time. 
+# The histogram of the time series shows that the forecast errors are roughly normally distributed and the mean seems to be close to zero. Therefore, it is plausible that the forecast errors are normally distributed with mean zero and constant variance. 
+
+# The ARIMA model ARIMA(2,1,0) with seasonality (1,1,2) appears to be reasonable and it performs  better with AICc value 747.75, which is the lowest. The plot looks like a white noise.
+
+# j. 
+
+```{r }
+
+fit.nn <- nnetar(data, lambda=0)
+fit.nn
+forecast.nn <- forecast(fit.nn,h=48)
+```
+
+# Forecasts from an NNAR(12,1,6) are shown for the next 48 months. I set a Box-Cox transformation with lambda=0 to ensure the forecasts stay positive.
+# The last 12 observations are used as predictors, and there are 6 neurons in the hidden layer.
+
+```{r }
+
+checkresiduals(forecast.nn)
+```
+
+# The model appears reasonable.
+# The plot shows that the distribution of forecast errors is roughly centered on zero, and is more or less normally distributed, although it seems to be slightly skewed to the right compared to a normal curve. However, the right skew is relatively small, and so it is plausible that the forecast errors are normally distributed with mean zero.
+
+# k.
+
+# test mean square in (c)
+
+```{r }
+
+res^2 %>% mean(na.rm=TRUE) %>% sqrt
+```
+
+# test mean square in (e)
+
+```{r }
+sqrt(mean(fit.dt$residuals^2))
+```
+
+# test mean square in (f)
+
+```{r }
+sqrt(mean(forecast.stl$residuals^2))
+```
+
+# test mean square in (h)
+
+```{r }
+
+fff<- baggedETS(data)
+foreff<- forecast(fff, h=48)
+sqrt(mean(foreff$residuals^2))
+```
+
+# test mean square in (i)
+
+```{r }
+sqrt(mean(fit.arima$residuals^2))
+```
+
+# test mean square in (j)
+
+```{r }
+summary(forecast.nn)
+RMSE <- 6.160504 
+```
+
+# The ETS method appears to be the best one with mean square error 0.08929735
+
+# l.
+
+```{r }
+
+train <- window(data, end=c(2012,9))
+h <- length(data) - length(train)
+ETS <- forecast(ets(train), h=h)
+ARIMA <- forecast(auto.arima(train, lambda=0, biasadj=TRUE),
+                  h=h)
+STL <- stlf(train, lambda=0, h=h, biasadj=TRUE)
+NNAR <- forecast(nnetar(train), h=h)
+TBATS <- forecast(tbats(train, biasadj=TRUE), h=h)
+Combination <- (ETS[["mean"]] + ARIMA[["mean"]] +
+                  STL[["mean"]] + NNAR[["mean"]] + TBATS[["mean"]])/5
+
+autoplot(data) +
+  autolayer(ETS, series="ETS", PI=FALSE) +
+  autolayer(ARIMA, series="ARIMA", PI=FALSE) +
+  autolayer(STL, series="STL", PI=FALSE) +
+  autolayer(NNAR, series="NNAR", PI=FALSE) +
+  autolayer(TBATS, series="TBATS", PI=FALSE) +
+  autolayer(Combination, series="Combination") +
+  xlab("Year") + ylab("$ billion") +
+  ggtitle("Total Vehicle Sales in Millions")
+```
+
+# Yes, it is possible to find a forecast combination that performs better than individual methods.
+# The forecast combination above combines the following models: ETS, ARIMA, STL-ETS, NNAR, and TBATS; and I compare the results using the last 5 years (60 months) of observations.
+# The test MSE values reveal that forecast combination only performs better than the NNAR model.
+# The test MSE is revealed below:
+
+```{r }
+
+c(ETS = accuracy(ETS, data)["Test set","RMSE"],
+  ARIMA = accuracy(ARIMA, data)["Test set","RMSE"],
+  `STL-ETS` = accuracy(STL, data)["Test set","RMSE"],
+  NNAR = accuracy(NNAR, data)["Test set","RMSE"],
+  TBATS = accuracy(TBATS, data)["Test set","RMSE"],
+  Combination =
+    accuracy(Combination, data)["Test set","RMSE"])
+
+```
+
